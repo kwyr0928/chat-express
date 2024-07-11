@@ -115,9 +115,16 @@ router.get('/api/groups/:group_id/members', async (req, res) => {
 });
 
 router.post('/api/invite-members', async (req, res) => {
-  const { event_id, user_ids } = req.body;
+  const { event_name, user_ids } = req.body;
 
   try {
+    const eventResult = await pool.query('SELECT event_id FROM events WHERE event_name = $1', [event_name]);
+    if (eventResult.rows.length === 0) {
+      return res.status(404).send('Event not found');
+    }
+
+    const event_id = eventResult.rows[0].event_id;
+
     const values = user_ids.map(user_id => `(${event_id}, ${user_id}, 3)`).join(',');
     await pool.query(`
       INSERT INTO event_participants (event_id, user_id, status) VALUES ${values}
