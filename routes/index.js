@@ -178,7 +178,7 @@ router.post('/api/events', async (req, res) => {
   const { event_name, event_date, firebase_uid, group_id } = req.body;
 
   try {
-    const userResult = await pool.query('SELECT user_id FROM users WHERE firebase_uid = $1', [firebase_uid]);
+    const userResult = await pool.query('SELECT user_id FROM usersA WHERE firebase_uid = $1', [firebase_uid]);
     if (userResult.rows.length === 0) {
       return res.status(404).send('User not found');
     }
@@ -186,8 +186,8 @@ router.post('/api/events', async (req, res) => {
     const user_id = userResult.rows[0].user_id;
 
     const eventResult = await pool.query(
-      'INSERT INTO events (event_name, event_date, created_by, group_id) VALUES ($1, $2, $3, $4) RETURNING *',
-      [event_name, event_date, user_id, group_id]
+      'INSERT INTO eventsB (user_id, group_id, event_name, event_date) VALUES ($1, $2, $3, $4) RETURNING *',
+      [user_id, group_id, event_name, event_date]
     );
     res.json(eventResult.rows[0]);
     
@@ -204,9 +204,9 @@ router.get('/api/groups/:group_id/members', async (req, res) => {
 
   try {
     const result = await pool.query(`
-      SELECT u.user_id, u.name, u.email 
-      FROM users u
-      INNER JOIN user_groups ug ON u.user_id = ug.user_id
+      SELECT u.user_id, u.user_name, u.user_email 
+      FROM usersA u
+      INNER JOIN user_groupsB ug ON u.user_id = ug.user_id
       WHERE ug.group_id = $1
     `, [group_id]);
 
@@ -218,19 +218,19 @@ router.get('/api/groups/:group_id/members', async (req, res) => {
 });
 
 router.post('/api/invite-members', async (req, res) => {
-  const { event_name, user_ids } = req.body;
+  const { event_name, user_ids, group_id } = req.body;
 
   try {
-    const eventResult = await pool.query('SELECT event_id FROM events WHERE event_name = $1', [event_name]);
+    const eventResult = await pool.query('SELECT event_id FROM eventsB WHERE event_name = $1', [event_name]);
     if (eventResult.rows.length === 0) {
       return res.status(404).send('Event not found');
     }
 
     const event_id = eventResult.rows[0].event_id;
 
-    const values = user_ids.map(user_id => `(${event_id}, ${user_id}, 3)`).join(',');
+    const values = user_ids.map(user_id => `(${event_id}, ${user_id}, ${group_id}, 3)`).join(',');
     await pool.query(`
-      INSERT INTO event_participants (event_id, user_id, status) VALUES ${values}
+      INSERT INTO membersB (event_id, user_id,group_id, status) VALUES ${values}
     `);
 
     res.send('Members invited');
@@ -240,6 +240,65 @@ router.post('/api/invite-members', async (req, res) => {
   }
 });
 
+router.post('/api/user/event', async (req, res) => {
+  const { firebase_uid } = req.body;
+
+  try {
+    // ユーザーの user_id を取得
+    const userResult = await pool.query('SELECT user_id FROM usersA WHERE firebase_uid = $1', [firebase_uid]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).send('User not found');
+    }
+
+    const user_id = userResult.rows[0].user_id;
+
+  if (!user_id) {
+      return res.status(400).json({ error: 'User ID is required' });
+  }
+
+  const result = await pool.query(
+    `SELECT e.event_id, e.event_name, e.event_date, e.detail, u.user_name AS creator_name, m.status, g.group_name
+     FROM eventsB e
+     JOIN membersB m ON e.event_id = m.event_id
+     JOIN usersA u ON e.user_id = u.user_id
+     JOIN groupsA g ON e.group_id = g.group_id
+     WHERE m.user_id = $1`,
+    [user_id]
+);
+      const events = result.rows.map(event => ({
+        ...event,
+        event_date: new Date(event.event_date).toISOString().split('T')[0]  // YYYY-MM-DD形式にフォーマット
+    }));
+
+      
+        res.json(events);
+  } catch (err) {
+      console.error('Error fetching events:', err);
+      res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.put('/api/user/event/status', async (req, res) => {
+  const { event_id, firebase_uid, status } = req.body;
+
+  try {
+    // ユーザーの user_id を取得
+    const userResult = await pool.query('SELECT user_id FROM usersA WHERE firebase_uid = $1', [firebase_uid]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).send('User not found');
+    }
+
+    const user_id = userResult.rows[0].user_id;
+
+    // イベントのステータスを更新
+    await pool.query('UPDATE membersB SET status = $1 WHERE event_id = $2 AND user_id = $3', [status, event_id, user_id]);
+
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('Error updating event status:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 
 module.exports = router;
