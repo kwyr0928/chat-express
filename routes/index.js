@@ -4,46 +4,171 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 
-// ルート1: "/" パスに対するGETリクエスト
 router.get("/", (req, res) => {
   res.send("Express on Vercel");
 });
 
-// ルート2: "/about" パスに対するGETリクエスト
-router.get("/about", (req, res) => {
-  res.send("About page");
-});
-
-// ルート3: "/contact" パスに対するPOSTリクエスト
-router.post("/signup", (req, res) => {
-  
-});
-
-// ユーザー登録
-router.post("/api/signup", async (req, res) => {
+// ユーザー登録 〇
+router.post("/api/registry", async (req, res) => {
   try {
-    const { firebase_uid, email, name } = req.body;
+    const { firebase_uid, name, email } = req.body;
     const result = await pool.query(
-      'INSERT INTO users (firebase_uid, email, name) VALUES ($1, $2, $3) RETURNING *',
-      [firebase_uid, email, name]
+      'INSERT INTO usersA (firebase_uid, user_name, user_email) VALUES ($1, $2, $3) RETURNING *',
+      [firebase_uid, name, email]
     );
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
- 
 });
 
-// グループ作成API
+
+// グループ作成 〇
 router.post('/api/groups', async (req, res) => {
-  const { group_name } = req.body;
+  const { group_name, firebase_uid } = req.body;
   try {
-    const result = await pool.query(
-      'INSERT INTO groups (group_name) VALUES ($1) RETURNING *',
+    // グループを作成
+    const result1 = await pool.query(
+      'INSERT INTO groupsA (group_name) VALUES ($1) RETURNING *',
       [group_name]
     );
-    res.json(result.rows[0]);
+
+    // group_id を取得
+    const group_id = result1.rows[0].group_id;
+
+    // ユーザーの user_id を取得
+    const userResult = await pool.query('SELECT user_id FROM usersA WHERE firebase_uid = $1', [firebase_uid]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).send('User not found');
+    }
+
+    const user_id = userResult.rows[0].user_id;
+
+    // user_groupsA テーブルにデータを挿入
+    const result2 = await pool.query(
+      'INSERT INTO user_groupsB (group_id, user_id) VALUES ($1, $2) RETURNING *',
+      [group_id, user_id]
+    );
+    res.json(result2.rows[0]);
   } catch (err) {
+    console.error(err); // エラーログを出力
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 既存のグループに参加 〇
+router.post('/api/join-group', async (req, res) => {
+  const { group_id, firebase_uid } = req.body;
+
+  try {
+    // ユーザーの user_id を取得
+    const userResult = await pool.query('SELECT user_id FROM usersA WHERE firebase_uid = $1', [firebase_uid]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).send('User not found');
+    }
+
+    const user_id = userResult.rows[0].user_id;
+
+    // ユーザーをグループに追加
+    const userGroupResult = await pool.query(
+      'INSERT INTO user_groupsB (group_id, user_id) VALUES ($1, $2) RETURNING *',
+      [group_id, user_id]
+    );
+    res.json(userGroupResult.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ユーザーのグループID、グループ名を取得 〇
+router.post('/api/users/group', async (req, res) => {
+  const { firebase_uid } = req.body;
+
+  try {
+  // ユーザーの user_id を取得
+  const userResult = await pool.query('SELECT user_id FROM usersA WHERE firebase_uid = $1', [firebase_uid]);
+  if (userResult.rows.length === 0) {
+    return res.status(404).send('User not found');
+  }
+
+  const user_id = userResult.rows[0].user_id;
+
+    // ユーザーが所属するグループIDを取得
+    const groupResult = await pool.query('SELECT group_id FROM user_groupsB WHERE user_id = $1', [user_id]);
+    
+    if (groupResult.rows.length === 0) {
+      return res.status(404).send('No groups found for this user');
+    }
+
+    // グループIDを元にグループ名を取得
+    const groupIds = groupResult.rows.map(row => row.group_id);
+    const groupDetails = [];
+    
+    for (let groupId of groupIds) {
+      const nameResult = await pool.query('SELECT group_id, group_name FROM groupsA WHERE group_id = $1', [groupId]);
+      if (nameResult.rows.length > 0) {
+        groupDetails.push({
+          group_id: nameResult.rows[0].group_id,
+          group_name: nameResult.rows[0].group_name
+        });
+      }
+    }
+    res.json(groupDetails);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/api/groups/calendar', async (req, res) => {
+  const { group_id } = req.body;
+  
+  try {
+    // グループに参加しているユーザーの名前一覧を取得
+    const usersResult = await pool.query(
+      'SELECT u.user_id, u.user_name FROM usersA u JOIN user_groupsB ug ON u.user_id = ug.user_id WHERE ug.group_id = $1',
+      [group_id]
+    );
+
+    if (usersResult.rows.length === 0) {
+      return res.status(404).json({ error: 'No users found for this group' });
+    }
+
+    const users = usersResult.rows;
+
+    // 今日から一週間のステータスを取得
+    const today = new Date();
+    const dates = Array.from({ length: 7 }, (_, i) => {
+      const date = new Date(today);
+      date.setDate(today.getDate() + i);
+      return date.toISOString().split('T')[0]; // 'YYYY-MM-DD'形式
+    });
+
+    const statusPromises = users.map(user => {
+      return pool.query(
+        'SELECT date, status FROM schedulesA WHERE user_id = $1 AND date = ANY($2::date[])',
+        [user.user_id, dates]
+      );
+    });
+
+    const statusResults = await Promise.all(statusPromises);
+
+    // 各ユーザーのステータスをマッピング
+    const userStatuses = users.map((user, index) => {
+      return {
+        user_id: user.user_id,
+        user_name: user.user_name,
+        status: statusResults[index].rows.reduce((acc, row) => {
+          acc[row.date] = row.status;
+          return acc;
+        }, {})
+      };
+    });
+
+    res.json(userStatuses);
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -65,36 +190,14 @@ router.post('/api/events', async (req, res) => {
       [event_name, event_date, user_id, group_id]
     );
     res.json(eventResult.rows[0]);
+    
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-router.post('/api/join-group', async (req, res) => {
-  const { group_id, firebase_uid } = req.body;
 
-  try {
-    // ユーザーの user_id を取得
-    const userResult = await pool.query('SELECT user_id FROM users WHERE firebase_uid = $1', [firebase_uid]);
-    if (userResult.rows.length === 0) {
-      return res.status(404).send('User not found');
-    }
-
-    const user_id = userResult.rows[0].user_id;
-
-    // ユーザーをグループに追加
-    const userGroupResult = await pool.query(
-      'INSERT INTO user_groups (user_id, group_id) VALUES ($1, $2) RETURNING *',
-      [user_id, group_id]
-    );
-
-    res.json(userGroupResult.rows[0]);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
 
 router.get('/api/groups/:group_id/members', async (req, res) => {
   const { group_id } = req.params;
