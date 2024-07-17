@@ -114,7 +114,10 @@ router.post('/api/users/group', async (req, res) => {
         });
       }
     }
-    res.json(groupDetails);
+    res.json({
+      user_id: user_id,
+      groups: groupDetails
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -145,9 +148,11 @@ router.post('/api/groups/calendar', async (req, res) => {
       return date.toISOString().split('T')[0]; // 'YYYY-MM-DD'形式
     });
 
+    console.log(dates);
+
     const statusPromises = users.map(user => {
       return pool.query(
-        'SELECT date, status FROM schedulesA WHERE user_id = $1 AND date = ANY($2::date[])',
+        'SELECT date, status FROM schedulesB WHERE user_id = $1 AND date = ANY($2::text[])',
         [user.user_id, dates]
       );
     });
@@ -156,13 +161,15 @@ router.post('/api/groups/calendar', async (req, res) => {
 
     // 各ユーザーのステータスをマッピング
     const userStatuses = users.map((user, index) => {
+      const userStatus = dates.reduce((acc, date) => {
+        const statusRow = statusResults[index].rows.find(row => row.date === date);
+        acc[date] = statusRow ? statusRow.status : "-";
+        return acc;
+      }, {});
       return {
         user_id: user.user_id,
         user_name: user.user_name,
-        status: statusResults[index].rows.reduce((acc, row) => {
-          acc[row.date] = row.status;
-          return acc;
-        }, {})
+        status: userStatus
       };
     });
 
@@ -172,6 +179,7 @@ router.post('/api/groups/calendar', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // イベント作成API
 router.post('/api/events', async (req, res) => {
@@ -297,6 +305,51 @@ router.put('/api/user/event/status', async (req, res) => {
   } catch (err) {
     console.error('Error updating event status:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.post('/api/schedules/batch', async (req, res) => {
+  const { schedules, firebase_uid } = req.body;
+
+  try {
+    // Fetch user_id using firebase_uid
+    const userResult = await pool.query('SELECT user_id FROM usersA WHERE firebase_uid = $1', [firebase_uid]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).send('User not found');
+    }
+
+    const user_id = userResult.rows[0].user_id;
+
+    // Create a list of values for the query
+    const values = schedules.map((_, index) => 
+      `($${index * 3 + 1}, $${index * 3 + 2}, $${index * 3 + 3})`
+    ).join(',');
+
+    // Create the query string
+    const query = `
+      INSERT INTO schedulesB (user_id, date, status)
+      VALUES ${values}
+      ON CONFLICT (user_id, date)
+      DO UPDATE SET status = EXCLUDED.status
+    `;
+
+    // Create the parameter array
+    const params = schedules.flatMap(({ date, status }) => [user_id, date, parseInt(status, 10)]);
+
+    // Execute the query
+    await pool.query(query, params);
+
+    res.status(201).json({ message: 'Schedule entries added/updated successfully' });
+  } catch (error) {
+    console.error('Server error:', error);
+    res.status(500).json({
+      error: 'Server error',
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+      hint: error.hint,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
