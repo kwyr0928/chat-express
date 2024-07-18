@@ -1,45 +1,65 @@
 require('dotenv').config();
 
-const pool = require('../config/database'); // データベースの設定を読み込む
+const pool = require('../config/database');
 
-let connects = []; // 接続しているクライアントのリストを保持する配列
+let connects = {};
 
-// データベースにメッセージを保存する関数
-async function saveMessage(message) {
-  const query = 'INSERT INTO messages (content) VALUES ($1)';
-  await pool.query(query, [message]);
+async function saveMessage(message, eventId, userName) {
+  const query = 'INSERT INTO messages (content, event_id, user_name) VALUES ($1, $2, $3)';
+  await pool.query(query, [message, eventId, userName]);
 }
 
-// 過去のメッセージを取得する関数
-async function getMessages() {
-  const query = 'SELECT content FROM messages ORDER BY created_at DESC LIMIT 50';
-  const result = await pool.query(query);
-  return result.rows.map(row => row.content);
+async function getMessages(eventId) {
+  const query = 'SELECT user_name, content FROM messages WHERE event_id = $1 ORDER BY created_at DESC LIMIT 50';
+  const result = await pool.query(query, [eventId]);
+  return result.rows.map(row => ({ userName: row.user_name, message: row.content }));
 }
 
 module.exports = function(app) {
   app.ws('/ws', async (ws, req) => {
-    connects.push(ws); // 新しいクライアントを接続リストに追加
+    const eventId = req.query.eventId;
+    if (!eventId) {
+      ws.close(1008, 'event ID is required');
+      return;
+    }
 
-    const messages = await getMessages(); // 過去のメッセージを取得
-    messages.forEach(message => {
-      ws.send(message); // 過去のメッセージをクライアントに送信
-    });
+    if (!connects[eventId]) {
+      connects[eventId] = new Set();
+    }
+    connects[eventId].add(ws);
+
+    try {
+      const messages = await getMessages(eventId);
+      messages.forEach(message => {
+        ws.send(JSON.stringify(message));
+      });
+    } catch (error) {
+      console.error('Error fetching messages:', error);
+      ws.send(JSON.stringify({ error: 'Error fetching messages' }));
+    }
 
     ws.on('message', async (message) => {
-      console.log('Received:', message); // 受信したメッセージをログに出力
+      console.log('Received:', message);
 
-      await saveMessage(message); // メッセージをデータベースに保存
+      try {
+        const parsedMessage = JSON.parse(message);
+        await saveMessage(parsedMessage.message, parsedMessage.eventId, parsedMessage.userName);
 
-      connects.forEach((socket) => {
-        if (socket.readyState === 1) { // 接続が開いている場合
-          socket.send(message); // メッセージを全てのクライアントに送信
-        }
-      });
+        connects[parsedMessage.eventId].forEach((socket) => {
+          if (socket.readyState === 1) { // WebSocket.OPEN
+            socket.send(JSON.stringify(parsedMessage));
+          }
+        });
+      } catch (error) {
+        console.error('Error processing message:', error);
+      }
     });
 
     ws.on('close', () => {
-      connects = connects.filter((conn) => conn !== ws); // クローズしたクライアントを接続リストから削除
+      connects[eventId].delete(ws);
+      if (connects[eventId].size === 0) {
+        delete connects[eventId];
+      }
     });
   });
 };

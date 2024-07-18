@@ -87,12 +87,13 @@ router.post('/api/users/group', async (req, res) => {
 
   try {
   // ユーザーの user_id を取得
-  const userResult = await pool.query('SELECT user_id FROM usersA WHERE firebase_uid = $1', [firebase_uid]);
+  const userResult = await pool.query('SELECT user_id, user_name FROM usersA WHERE firebase_uid = $1', [firebase_uid]);
   if (userResult.rows.length === 0) {
     return res.status(404).send('User not found');
   }
 
   const user_id = userResult.rows[0].user_id;
+  const user_name = userResult.rows[0].user_name;
 
     // ユーザーが所属するグループIDを取得
     const groupResult = await pool.query('SELECT group_id FROM user_groupsB WHERE user_id = $1', [user_id]);
@@ -116,6 +117,7 @@ router.post('/api/users/group', async (req, res) => {
     }
     res.json({
       user_id: user_id,
+      user_name: user_name,
       groups: groupDetails
     });
   } catch (err) {
